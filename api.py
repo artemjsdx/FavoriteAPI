@@ -236,15 +236,21 @@ if __name__ == '__main__':
                 daemon=True, name='tg-notify',
             ).start()
 
-    cf_manager = CloudflareManager(port=port, on_url=on_tunnel_url)
+    # Если задан постоянный PUBLIC_URL — CF тоннель работает для связи,
+    # но НЕ отправляет случайный trycloudflare.com URL в Telegram.
+    # Telegram получает только постоянный домен.
+    _public_url = os.environ.get("PUBLIC_URL", "").strip()
+    _cf_on_url = None if _public_url else on_tunnel_url
+
+    cf_manager = CloudflareManager(port=port, on_url=_cf_on_url)
     shutdown.set_cf_manager(cf_manager)
     cf_manager.start()
 
-    # PUBLIC_URL -> TG notification at startup
-    _public_url = os.environ.get("PUBLIC_URL", "").strip()
     if _public_url:
-        logger.info("[API] PUBLIC_URL: %s", _public_url)
+        logger.info("[API] PUBLIC_URL: %s (CF tunnel активен, но TG уведомление — только постоянный домен)", _public_url)
         on_tunnel_url(_public_url)
+    else:
+        logger.info("[API] PUBLIC_URL не задан — TG будет получать CF tunnel URL")
 
     app = create_app()
 
