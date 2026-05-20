@@ -1,35 +1,21 @@
 """
-Tunnel managers: Serveo (primary, permanent URL) + Cloudflare (fallback).
+ServeoManager — постоянный HTTPS туннель через serveo.net.
 
-ServeoManager:
- - Подключается через SSH к serveo.net с фиксированным именем
- - Даёт постоянный URL https://<name>.serveo.net
- - Авто-переподключение при обрыве (с backoff)
- - on_url вызывается при каждом (пере)подключении
-
-CloudflareManager:
- - Quick Tunnel через cloudflared
- - URL меняется при каждом перезапуске процесса
- - Используется как fallback если serveo недоступен
+Использует paramiko (Python SSH), системный ssh не нужен.
+Даёт постоянный URL https://<name>.serveo.net.
+Автоматически переподключается при обрыве соединения.
 """
-import re
-import subprocess
+import logging
+import socket
 import threading
 import time
-import logging
 from typing import Callable, Optional
 
 logger = logging.getLogger('freeapi')
 
-_CF_URL_RE = re.compile(r'https://[a-z0-9\-]+\.trycloudflare\.com')
-
-
-# ══════════════════════════════════════════════════════════════════════
-#  ServeoManager — постоянный публичный URL через ssh serveo.net
-# ══════════════════════════════════════════════════════════════════════
 
 class ServeoManager:
-    """SSH reverse tunnel через serveo.net.
+    """SSH reverse tunnel через serveo.net (paramiko, без системного ssh).
 
     Даёт постоянный HTTPS URL: https://<name>.serveo.net
     Автоматически переподключается при обрыве.
@@ -40,8 +26,6 @@ class ServeoManager:
         self._port = port
         self._name = name
         self._on_url = on_url
-        self._proc: Optional[subprocess.Popen] = None
-        self._proc_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._url = f'https://{name}.serveo.net'
 
@@ -54,8 +38,6 @@ class ServeoManager:
     def stop(self):
         logger.info('[Serveo] Остановка...')
         self._stop_event.set()
-        self._kill_proc()
-        logger.info('[Serveo] Остановлен')
 
     @property
     def url(self) -> str:
@@ -66,172 +48,94 @@ class ServeoManager:
     def _loop(self):
         backoff = 5
         while not self._stop_event.is_set():
-            connected = self._run_once()
+            try:
+                self._connect_once()
+                backoff = 5
+                logger.info('[Serveo] Соединение прервано, переподключение через %ss...', backoff)
+            except Exception as exc:
+                logger.warning('[Serveo] Ошибка подключения: %s | повтор через %ss', exc, backoff)
             if self._stop_event.is_set():
                 break
-            if connected:
-                backoff = 5  # сброс backoff при успешном подключении
-                logger.info('[Serveo] Соединение прервано, переподключение через %ss...', backoff)
-            else:
-                logger.warning('[Serveo] Не удалось подключиться, повтор через %ss...', backoff)
             time.sleep(backoff)
             backoff = min(backoff * 2, 120)
 
-    def _run_once(self) -> bool:
-        """Запустить SSH, вернуть True если соединение установилось."""
-        try:
-            proc = subprocess.Popen(
-                [
-                    'ssh',
-                    '-R', f'{self._name}:80:localhost:{self._port}',
-                    '-o', 'StrictHostKeyChecking=no',
-                    '-o', 'ServerAliveInterval=30',
-                    '-o', 'ServerAliveCountMax=3',
-                    '-o', 'ExitOnForwardFailure=yes',
-                    '-o', 'LogLevel=VERBOSE',
-                    'serveo.net',
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            with self._proc_lock:
-                self._proc = proc
+    def _connect_once(self):
+        import paramiko  # импорт здесь — чтобы не ломать старт если пакет ещё ставится
 
-            connected = False
-            for line in proc.stdout:
-                if self._stop_event.is_set():
-                    break
-                line = line.strip()
-                if line:
-                    logger.debug('[Serveo] %s', line)
-                # Serveo пишет "Forwarding HTTP traffic from https://..." когда готов
-                if 'serveo.net' in line and ('Forwarding' in line or 'forwarding' in line):
-                    connected = True
-                    logger.info('[Serveo] Туннель активен: %s', self._url)
-                    if self._on_url:
-                        try:
-                            self._on_url(self._url)
-                        except Exception as exc:
-                            logger.error('[Serveo] on_url callback ошибка: %s', exc)
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(
+            'serveo.net',
+            port=22,
+            username='',
+            look_for_keys=False,
+            allow_agent=False,
+            timeout=30,
+        )
+        transport = client.get_transport()
+        transport.set_keepalive(30)
 
-            proc.wait()
-            return connected
+        # Запрашиваем reverse port forwarding: serveo:80 → localhost:self._port
+        transport.request_port_forward(self._name, 80, handler=self._make_handler())
 
-        except FileNotFoundError:
-            logger.warning('[Serveo] ssh не найден — туннель недоступен')
-            return False
-        except Exception as exc:
-            logger.error('[Serveo] Ошибка: %s', exc)
-            return False
-
-    def _kill_proc(self):
-        with self._proc_lock:
-            proc = self._proc
-            self._proc = None
-        if proc is None:
-            return
-        try:
-            proc.terminate()
+        logger.info('[Serveo] Туннель активен: %s', self._url)
+        if self._on_url:
             try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-        except Exception as exc:
-            logger.warning('[Serveo] Ошибка при завершении: %s', exc)
+                self._on_url(self._url)
+            except Exception as exc:
+                logger.error('[Serveo] on_url callback ошибка: %s', exc)
+
+        # Держим соединение пока transport жив
+        while transport.is_active() and not self._stop_event.is_set():
+            time.sleep(2)
+
+        client.close()
+
+    def _make_handler(self):
+        """Возвращает handler для входящих соединений от serveo → localhost."""
+        local_port = self._port
+
+        def handler(channel, origin_addr, server_addr):
+            sock = socket.socket()
+            try:
+                sock.connect(('localhost', local_port))
+            except Exception as exc:
+                logger.warning('[Serveo] Не удалось подключиться к localhost:%s: %s', local_port, exc)
+                channel.close()
+                return
+            # Двусторонний проброс данных
+            threading.Thread(
+                target=_forward, args=(channel, sock),
+                daemon=True, name='serveo-fwd',
+            ).start()
+
+        return handler
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  CloudflareManager — Quick Tunnel (fallback, URL меняется при рестарте)
-# ══════════════════════════════════════════════════════════════════════
-
-class CloudflareManager:
-    def __init__(self, port: int, on_url: Optional[Callable[[str], None]] = None):
-        self._port = port
-        self._on_url = on_url
-        self._proc: Optional[subprocess.Popen] = None
-        self._proc_lock = threading.Lock()
-        self._stop_event = threading.Event()
-        self._current_url: Optional[str] = None
-
-    def start(self):
-        t = threading.Thread(target=self._run_once, daemon=True, name='cf-runner')
-        t.start()
-        logger.info('[Cloudflare] Менеджер запущен (порт %s)', self._port)
-
-    def stop(self):
-        logger.info('[Cloudflare] Получен сигнал остановки...')
-        self._stop_event.set()
-        self._kill_proc()
-        logger.info('[Cloudflare] Менеджер остановлен')
-
-    @property
-    def current_url(self) -> Optional[str]:
-        return self._current_url
-
-    def _run_once(self):
-        if self._stop_event.is_set():
-            return
-        self._start_proc()
-
-    def _start_proc(self) -> Optional[str]:
-        try:
-            proc = subprocess.Popen(
-                ['cloudflared', 'tunnel', '--url', f'http://localhost:{self._port}'],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            with self._proc_lock:
-                self._proc = proc
-
-            url = None
-            for line in proc.stdout:
-                if self._stop_event.is_set():
+def _forward(src, dst):
+    """Пробрасывает данные между двумя сокетами до закрытия."""
+    import select
+    try:
+        while True:
+            r, _, _ = select.select([src, dst], [], [], 5)
+            if src in r:
+                data = src.recv(4096)
+                if not data:
                     break
-                m = _CF_URL_RE.search(line)
-                if m:
-                    url = m.group(0)
+                dst.sendall(data)
+            if dst in r:
+                data = dst.recv(4096)
+                if not data:
                     break
-
-            if url:
-                self._current_url = url
-                logger.info('[Tunnel] Cloudflare Tunnel активен: %s', url)
-                if self._on_url:
-                    try:
-                        self._on_url(url)
-                    except Exception as exc:
-                        logger.error('[Cloudflare] on_url callback ошибка: %s', exc)
-
-            threading.Thread(target=self._drain_stdout, args=(proc,), daemon=True).start()
-            return url
-
-        except FileNotFoundError:
-            logger.warning('[Cloudflare] cloudflared не найден — тоннель не запущен')
-            return None
-        except Exception as exc:
-            logger.error('[Cloudflare] Ошибка запуска: %s', exc)
-            return None
-
-    def _drain_stdout(self, proc: subprocess.Popen):
+                src.sendall(data)
+    except Exception:
+        pass
+    finally:
         try:
-            for _ in proc.stdout:
-                pass
+            src.close()
         except Exception:
             pass
-
-    def _kill_proc(self):
-        with self._proc_lock:
-            proc = self._proc
-            self._proc = None
-        if proc is None:
-            return
         try:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-            logger.info('[Cloudflare] Процесс завершён')
-        except Exception as exc:
-            logger.warning('[Cloudflare] Ошибка при завершении процесса: %s', exc)
+            dst.close()
+        except Exception:
+            pass
