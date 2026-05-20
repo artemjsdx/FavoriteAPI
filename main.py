@@ -1,10 +1,23 @@
-import sys
 import os
+import sys
+import subprocess
+import shutil
 
-container_dir = os.path.dirname(os.path.abspath(__file__))
-if container_dir not in sys.path:
-    sys.path.insert(0, container_dir)
-os.chdir(container_dir)
+base = "/home/container"
+
+if not os.path.isdir(os.path.join(base, "freeapi")):
+    print("[setup] freeapi/ missing - restoring from GitHub...", flush=True)
+    subprocess.run(
+        ["git", "clone", "--depth=1", "https://github.com/artemjsdx/FavoriteAPI.git", "/tmp/_fapi"],
+        check=True
+    )
+    shutil.copytree("/tmp/_fapi/freeapi", os.path.join(base, "freeapi"))
+    if not os.path.isdir(os.path.join(base, "static")) and os.path.isdir("/tmp/_fapi/static"):
+        shutil.copytree("/tmp/_fapi/static", os.path.join(base, "static"))
+    print("[setup] freeapi/ restored!", flush=True)
+
+sys.path.insert(0, base)
+os.chdir(base)
 
 import runpy
-runpy.run_path(os.path.join(container_dir, "api.py"), run_name="__main__")
+runpy.run_path(os.path.join(base, "api.py"), run_name="__main__")
