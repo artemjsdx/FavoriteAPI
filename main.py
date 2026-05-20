@@ -19,18 +19,20 @@ if not os.path.isdir(os.path.join(base, "freeapi")):
         shutil.copytree("/tmp/_fapi/static", os.path.join(base, "static"))
     print("[setup] freeapi/ restored!", flush=True)
 
-# --- 2. Install cloudflared if missing ---
-cf_bin = os.path.join(base, ".local", "bin", "cloudflared")
-if not os.path.isfile(cf_bin):
-    os.makedirs(os.path.dirname(cf_bin), exist_ok=True)
-    print("[setup] Downloading cloudflared...", flush=True)
-    url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
-    urllib.request.urlretrieve(url, cf_bin)
-    os.chmod(cf_bin, os.stat(cf_bin).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    print("[setup] cloudflared installed!", flush=True)
-
-# Add .local/bin to PATH so cloudflared is found
-os.environ["PATH"] = os.path.join(base, ".local", "bin") + ":" + os.environ.get("PATH", "")
+# --- 2. Install cloudflared only if PUBLIC_URL is not set ---
+public_url = os.environ.get("PUBLIC_URL", "").strip()
+if not public_url:
+    cf_bin = os.path.join(base, ".local", "bin", "cloudflared")
+    if not os.path.isfile(cf_bin):
+        os.makedirs(os.path.dirname(cf_bin), exist_ok=True)
+        print("[setup] Downloading cloudflared...", flush=True)
+        url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+        urllib.request.urlretrieve(url, cf_bin)
+        os.chmod(cf_bin, os.stat(cf_bin).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        print("[setup] cloudflared installed!", flush=True)
+    os.environ["PATH"] = os.path.join(base, ".local", "bin") + ":" + os.environ.get("PATH", "")
+else:
+    print("[setup] PUBLIC_URL задан, cloudflared не нужен", flush=True)
 
 sys.path.insert(0, base)
 os.chdir(base)
