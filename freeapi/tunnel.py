@@ -4,8 +4,13 @@ ServeoManager — постоянный HTTPS туннель через serveo.ne
 Использует paramiko (Python SSH), системный ssh не нужен.
 Даёт постоянный URL https://<name>.serveo.net.
 Автоматически переподключается при обрыве соединения.
+
+Ключ сохраняется в файл SERVEO_KEY_PATH (по умолчанию /home/container/serveo_key)
+и переиспользуется при рестарте — это критично, т.к. Serveo привязывает
+субдомен к конкретному SSH ключу.
 """
 import logging
+import os
 import socket
 import threading
 import time
@@ -13,12 +18,16 @@ from typing import Callable, Optional
 
 logger = logging.getLogger('freeapi')
 
+DEFAULT_KEY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'serveo_key')
+
 
 class ServeoManager:
     """SSH reverse tunnel через serveo.net (paramiko, без системного ssh).
 
     Даёт постоянный HTTPS URL: https://<name>.serveo.net
     Автоматически переподключается при обрыве.
+    SSH ключ сохраняется на диск и переиспользуется — субдомен будет
+    стабильно привязан к одному и тому же ключу.
     """
 
     def __init__(self, port: int, name: str,
@@ -28,7 +37,7 @@ class ServeoManager:
         self._on_url = on_url
         self._stop_event = threading.Event()
         self._url = f'https://{name}.serveo.net'
-        self._key = None  # генерируется один раз при первом подключении
+        self._key = None
 
     def start(self):
         """Запустить туннель в фоне. Не блокирует."""
@@ -61,12 +70,35 @@ class ServeoManager:
             backoff = min(backoff * 2, 120)
 
     def _get_key(self):
-        """Возвращает RSA ключ (генерирует один раз на старте)."""
+        """Загружает RSA ключ из файла или генерирует новый и сохраняет."""
         import paramiko
-        if self._key is None:
-            logger.info('[Serveo] Генерирую RSA ключ для аутентификации...')
-            self._key = paramiko.RSAKey.generate(2048)
-        return self._key
+        if self._key is not None:
+            return self._key
+
+        key_path = os.environ.get('SERVEO_KEY_PATH', DEFAULT_KEY_PATH)
+        key_path = os.path.realpath(key_path)
+
+        if os.path.exists(key_path):
+            try:
+                key = paramiko.RSAKey.from_private_key_file(key_path)
+                logger.info('[Serveo] Ключ загружен из %s (fingerprint: %s)', key_path, key.get_fingerprint().hex())
+                self._key = key
+                return key
+            except Exception as e:
+                logger.warning('[Serveo] Не удалось загрузить ключ из %s: %s — генерирую новый', key_path, e)
+
+        logger.info('[Serveo] Генерирую новый RSA ключ...')
+        key = paramiko.RSAKey.generate(2048)
+        try:
+            os.makedirs(os.path.dirname(key_path) or '.', exist_ok=True)
+            key.write_private_key_file(key_path)
+            logger.info('[Serveo] Ключ сохранён в %s', key_path)
+            logger.info('[Serveo] Публичный ключ (добавьте на serveo.net если нужно): ssh-rsa %s serveo', key.get_base64())
+        except Exception as e:
+            logger.warning('[Serveo] Не удалось сохранить ключ в %s: %s', key_path, e)
+
+        self._key = key
+        return key
 
     def _connect_once(self):
         import paramiko  # импорт здесь — чтобы не ломать старт если пакет ещё ставится
