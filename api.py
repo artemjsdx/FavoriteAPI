@@ -11,7 +11,7 @@ from typing import Optional
 from freeapi.app import create_app
 from freeapi.database import init_database
 from freeapi.scheduler import start_background_tasks
-from freeapi.tunnel import CloudflareManager
+from freeapi.tunnel import CloudflareManager, ServeoManager
 from freeapi.tg_notify import (
     load_notify_config,
     notify_new_url,
@@ -236,21 +236,23 @@ if __name__ == '__main__':
                 daemon=True, name='tg-notify',
             ).start()
 
-    # Если задан постоянный PUBLIC_URL — CF тоннель работает для связи,
-    # но НЕ отправляет случайный trycloudflare.com URL в Telegram.
-    # Telegram получает только постоянный домен.
-    _public_url = os.environ.get("PUBLIC_URL", "").strip()
-    _cf_on_url = None if _public_url else on_tunnel_url
+    # Serveo — основной туннель, постоянный URL https://favoriteapi.serveo.net
+    # Работает через порт 443 HTTPS, проходит через любого оператора.
+    # CF tunnel — запасной, работает для связи но в TG не пишет.
+    _serveo_name = os.environ.get("SERVEO_NAME", "favoriteapi").strip()
+    serveo = ServeoManager(port=port, name=_serveo_name, on_url=on_tunnel_url)
+    serveo.start()
 
-    cf_manager = CloudflareManager(port=port, on_url=_cf_on_url)
+    # CF tunnel — запасной, без TG уведомления (URL нестабильный)
+    cf_manager = CloudflareManager(port=port, on_url=None)
     shutdown.set_cf_manager(cf_manager)
     cf_manager.start()
 
+    # PUBLIC_URL в .env переопределяет serveo (например для будущего платного домена)
+    _public_url = os.environ.get("PUBLIC_URL", "").strip()
     if _public_url:
-        logger.info("[API] PUBLIC_URL: %s (CF tunnel активен, но TG уведомление — только постоянный домен)", _public_url)
+        logger.info("[API] PUBLIC_URL override: %s", _public_url)
         on_tunnel_url(_public_url)
-    else:
-        logger.info("[API] PUBLIC_URL не задан — TG будет получать CF tunnel URL")
 
     app = create_app()
 
