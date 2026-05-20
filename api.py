@@ -240,6 +240,12 @@ if __name__ == '__main__':
     shutdown.set_cf_manager(cf_manager)
     cf_manager.start()
 
+    # PUBLIC_URL -> TG notification at startup
+    _public_url = os.environ.get("PUBLIC_URL", "").strip()
+    if _public_url:
+        logger.info("[API] PUBLIC_URL: %s", _public_url)
+        on_tunnel_url(_public_url)
+
     app = create_app()
 
     flask_thread = threading.Thread(
