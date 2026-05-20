@@ -28,6 +28,7 @@ class ServeoManager:
         self._on_url = on_url
         self._stop_event = threading.Event()
         self._url = f'https://{name}.serveo.net'
+        self._key = None  # генерируется один раз при первом подключении
 
     def start(self):
         """Запустить туннель в фоне. Не блокирует."""
@@ -59,15 +60,26 @@ class ServeoManager:
             time.sleep(backoff)
             backoff = min(backoff * 2, 120)
 
+    def _get_key(self):
+        """Возвращает RSA ключ (генерирует один раз на старте)."""
+        import paramiko
+        if self._key is None:
+            logger.info('[Serveo] Генерирую RSA ключ для аутентификации...')
+            self._key = paramiko.RSAKey.generate(2048)
+        return self._key
+
     def _connect_once(self):
         import paramiko  # импорт здесь — чтобы не ломать старт если пакет ещё ставится
+
+        key = self._get_key()
 
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         client.connect(
             'serveo.net',
             port=22,
-            username='',
+            username='serveo',
+            pkey=key,
             look_for_keys=False,
             allow_agent=False,
             timeout=30,
