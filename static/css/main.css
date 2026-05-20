@@ -11,14 +11,14 @@ input,textarea,select{font-family:inherit;color:inherit;background:none;border:n
 .container{max-width:1120px;margin:0 auto;padding:0 20px}
 
 /* BG */
-  .bg-wrap{position:fixed;inset:-200px;z-index:0;pointer-events:none;overflow:hidden;background:#000;backface-visibility:hidden;-webkit-backface-visibility:hidden}
+  .bg-wrap{position:fixed;inset:-200px;z-index:0;pointer-events:none;overflow:hidden;background:#000;backface-visibility:hidden;-webkit-backface-visibility:hidden;will-change:transform;contain:layout style paint;isolation:isolate}
   .bg-filter-layer{position:absolute;inset:0;filter:url(#bg-distort)}
   .bg-mesh{width:160%;height:160%;position:absolute;top:-30%;left:-30%;
     background-size:72px 72px;
     background-image:linear-gradient(to right,currentColor 1px,transparent 1px),linear-gradient(to bottom,currentColor 1px,transparent 1px);
     mask-image:radial-gradient(ellipse at 50% 50%,black 30%,transparent 82%);
     -webkit-mask-image:radial-gradient(ellipse at 50% 50%,black 30%,transparent 82%);
-    animation:bg-wave 14s ease-in-out infinite alternate,bg-clr 20s linear infinite}
+    animation:bg-wave 14s ease-in-out infinite alternate,bg-clr 20s linear infinite;will-change:transform}
   @keyframes bg-wave{
     0%{transform:scale(1.08) skew(4deg,3deg)}
     33%{transform:scale(1.16) rotate(1.5deg) skew(-3deg,-2deg)}
@@ -31,7 +31,7 @@ input,textarea,select{font-family:inherit;color:inherit;background:none;border:n
     60% {color:rgba(32,14,50,.9)}
     80% {color:rgba(14,38,32,.9)}
     100%{color:rgba(38,38,38,.9)}}
-  .bg-glow{position:absolute;border-radius:50%;mix-blend-mode:screen;filter:blur(130px);pointer-events:none}
+  .bg-glow{position:absolute;border-radius:50%;mix-blend-mode:screen;filter:blur(130px);pointer-events:none;will-change:filter;transform:translateZ(0)}
 
   /* ─── TOPBAR ─── */
 .topbar{position:sticky;top:0;z-index:200;background:rgba(0,0,0,.92);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-bottom:1px solid #141414;height:52px;display:flex;align-items:center;padding:0 16px;gap:12px}
