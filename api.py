@@ -165,11 +165,11 @@ class GracefulShutdown:
     """
     def __init__(self):
         self._event = threading.Event()
-        self._cf_manager: Optional[CloudflareManager] = None
+        self._cf_manager: Optional[ServeoManager] = None
         signal.signal(signal.SIGINT, self._handler)
         signal.signal(signal.SIGTERM, self._handler)
 
-    def set_cf_manager(self, manager: CloudflareManager):
+    def set_cf_manager(self, manager: ServeoManager):
         self._cf_manager = manager
 
     def _handler(self, sig, frame):
