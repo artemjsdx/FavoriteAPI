@@ -1,0 +1,324 @@
+═══════════════════════════════════════════════════════════════════════════════
+НОЧНОЕ АВТОНОМНОЕ ИССЛЕДОВАНИЕ — FavoriteAPI TUNNEL PLAN
+Дата: 21.05.2026 (~00:00–03:00)
+Исследовал: GitHub, awesome-tunneling (21k★), официальные сайты сервисов
+═══════════════════════════════════════════════════════════════════════════════
+
+─────────────────────────────────────────────────────────────────────────────
+A. ГЛАВНЫЙ ВЫВОД (читать первым)
+─────────────────────────────────────────────────────────────────────────────
+
+🔑 КЛЮЧЕВОЕ ОТКРЫТИЕ:
+  Serveo FREE план включает custom subdomains БЕСПЛАТНО ($0/month).
+  Источник: https://serveo.net (раздел Pricing)
+  
+  Проблема была ТОЛЬКО в том, что "favoriteapi.serveo.net" занят ключом
+  от потерянного Realme телефона.
+
+  ✅ РЕШЕНИЕ: Использовать ДРУГОЕ имя субдомена с НОВЫМ сохранённым ключом.
+  Например: favapi, artemapi, faveapi2 — любое незанятое имя.
+
+  Новый tunnel.py v2 (commit 5205d29) уже делает это автоматически:
+  пробует favapi → favapi2 → favapi3 → favapi4 → favapi5 → favapiapi → ...
+  
+  ⚠️ НО: Wispbyte сервер сейчас DOWN (Flask не отвечает на порту 8080).
+  Нужно зайти в панель и перезапустить сервер вручную.
+
+─────────────────────────────────────────────────────────────────────────────
+B. ЧТО СДЕЛАНО ЗА НОЧЬ
+─────────────────────────────────────────────────────────────────────────────
+
+1. [DONE] tunnel.py v2 — multi-provider fallback
+   Commit: 5205d29 → GitHub + Phone
+   Что умеет новый tunnel.py:
+   a) Serveo с несколькими именами субдомена (авто-fallback если занято)
+      Пробует: favapi → favapi2 → favapi3 → favapi4 → favapi5 → favapiapi
+   b) localhost.run fallback (тот же SSH ключ → тот же random URL)
+   c) Cloudflare Quick Tunnel fallback (random URL, крайний случай)
+   
+   Новые env vars:
+     SERVEO_NAME      — желаемый субдомен (def: favapi, а не favoriteapi!)
+     SERVEO_KEY_PATH  — путь к RSA ключу (def: ../serveo_key)  
+     TUNNEL_PROVIDER  — принудительный провайдер: serveo|localhostrun|cloudflare
+
+2. [KNOWN ISSUE] Wispbyte сервер DOWN
+   Проверено через Termux bridge: Flask не отвечает на localhost:8080
+   Нужно: зайти в панель https://wispbyte.com/client/servers/b016ad1e/
+   и перезапустить контейнер (кнопка Start/Restart).
+
+─────────────────────────────────────────────────────────────────────────────
+C. ПОЛНЫЙ АНАЛИЗ ВАРИАНТОВ (по приоритету)
+─────────────────────────────────────────────────────────────────────────────
+
+ВАРИАНТ 1 ⭐⭐⭐ — Serveo с новым субдоменом [РЕКОМЕНДУЕТСЯ, РЕАЛИЗОВАН]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+URL: https://favapi.serveo.net (или другое свободное имя)
+Стоимость: $0/month (Free plan)
+Стабильность: ★★★★★ — URL постоянный пока один и тот же RSA ключ
+Кастомный домен: ДА (custom subdomain *.serveo.net)
+Подтверждено: На сайте serveo.net явно написано "custom subdomains $0/month"
+
+Статус: Код готов в tunnel.py v2
+Действие пользователя:
+  1) Перезапустить Wispbyte сервер (панель)
+  2) Обновить tunnel.py на сервере:
+     curl -s "https://raw.githubusercontent.com/artemjsdx/FavoriteAPI/HEAD/freeapi/tunnel.py" \
+       -o /home/container/freeapi/tunnel.py
+  3) В .env изменить: SERVEO_NAME=favapi (или любое другое)
+  4) Перезапустить python api.py
+
+Почему работает: Serveo привязывает субдомен к SSH key fingerprint.
+  Новый ключ (сохранён в /home/container/serveo_key) может занять
+  любой незанятый субдомен. "favapi" скорее всего свободен.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ВАРИАНТ 2 ⭐⭐⭐ — localhost.run [РЕАЛИЗОВАН как FALLBACK]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+URL: https://randomhash.lhr.rocks (вида abc123def456.lhr.rocks)
+Стоимость: БЕСПЛАТНО навсегда ("Forever Free Tier")
+Стабильность: ★★★★☆ — тот же ключ = тот же URL при перезапуске
+              (меняется если соединение прерывается на несколько часов)
+Кастомный домен: НЕТ в free tier ($9/mo для custom)
+Сайт: https://localhost.run/
+
+Как работает: SSH tunnel, никакого сайтапа не нужно
+  ssh -o IdentityFile=/home/container/serveo_key \
+      -R 80:localhost:8080 localhost.run
+
+Ключевая цитата из документации:
+  "Free tunnels change domain names after a few hours. To keep your
+  domain name between connections make sure you have an SSH key and
+  that you are not using the nokey username."
+
+Вывод: Если тот же RSA ключ — URL стабилен между перезапусками ✅
+URL вида: abc123.lhr.rocks — не кастомный, но стабильный.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ВАРИАНТ 3 ⭐⭐⭐ — DNSHE Free Domain [DNS-ONLY, не туннель]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Что даёт: Бесплатный субдомен вида favoriteapi.us.ci или favoriteapi.de5.net
+GitHub: https://github.com/dnshe/DNSHE-FreeDomains (1754★, обновлён 20.05!)
+Сайт: https://www.dnshe.com
+Стоимость: БЕСПЛАТНО (с 180-дневным окном обновления)
+REST API: ДА — полностью API-driven управление
+Поддерживаемые домены: *.us.ci, *.cc.cd, *.de5.net, *.ccwu.cc
+
+Поддерживаемые записи: A, AAAA, CNAME, MX, TXT, NS, SRV, CAA
+
+КАК ИСПОЛЬЗОВАТЬ ДЛЯ FAVORITEAPI:
+  1) Зарегистрироваться на dnshe.com (бесплатно, без карты)
+  2) Создать домен: favoriteapi.us.ci
+  3) Добавить A-запись: favoriteapi.us.ci → 82.165.56.146
+  4) Доступ: http://favoriteapi.us.ci:10054 или https (если SSL)
+  
+  ⚠️ МИНУС: Нестандартный порт :10054 всё равно нужно указывать в URL.
+             DNS не может скрыть порт.
+  ✅ ПЛЮС: Красивый постоянный домен, не меняется никогда.
+           Можно автоматизировать обновление через REST API.
+           Работает даже если туннели недоступны (прямой IP).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ВАРИАНТ 4 ⭐⭐ — pagekite [СТАБИЛЬНЫЙ КАСТОМНЫЙ СУБДОМЕН]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+URL: https://yourname.pagekite.me
+Стоимость: "Individuals can use for free or pay what you want"
+           (фактически бесплатно для личных проектов)
+GitHub: https://github.com/pagekite/PyPagekite (750★)
+Сайт: https://pagekite.net/
+
+Как использовать:
+  pip install pagekite (или скачать pagekite.py)
+  python3 pagekite.py 8080 favoriteapi.pagekite.me
+  
+  При первом запуске регистрирует аккаунт, выбирает имя.
+
+⚠️ МИНУС: Нужна регистрация email, 1-месячный триал бесплатно, потом
+          нужно "платить что хочешь" (можно $0 если некоммерческий).
+          Менее предсказуемо чем Serveo.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ВАРИАНТ 5 ⭐⭐ — tuns.sh (managed sish) [RANDOM URL, БЕСПЛАТНО]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+URL: https://random.tuns.sh
+Стоимость: Бесплатно (managed sish от pico.sh)
+Команда: ssh -R 80:localhost:8080 tuns.sh
+⚠️ МИНУС: Случайный URL, меняется при переподключении.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ВАРИАНТ 6 ⭐⭐ — is-a.dev [DNS-ONLY, GitHub PR]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+URL: favoriteapi.is-a.dev
+GitHub: https://github.com/is-a-dev/register (10312★)
+Стоимость: Полностью бесплатно
+Как получить: Fork репо → создать JSON файл → открыть PR → ждать мерджа
+Время: 1-7 дней (проверка людьми)
+⚠️ МИНУС: Только DNS, не туннель. Нужен порт :10054 в URL.
+           Долго ждать апрув.
+           Нужен публичный GitHub репо или сайт для апрува.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ВАРИАНТ 7 ⭐ — eu.org [БЕСПЛАТНЫЙ ДОМЕН С 1996]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+URL: favoriteapi.eu.org
+Стоимость: Полностью бесплатно с 1996
+Сайт: https://nic.eu.org
+⚠️ МИНУС: Заявка рассматривается несколько дней/недель.
+           Только DNS (не туннель).
+✅ ПЛЮС: Настоящий домен второго уровня, очень надёжный.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ВАРИАНТ 8 ⭐ — Microsoft Dev Tunnels [НУЖНО ТЕСТИРОВАТЬ]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+URL: xxx.devtunnels.ms
+Microsoft docs: "Persistent URLs - Keep the same dev tunnel url for as long as you need"
+CLI: скачивается с aka.ms/TunnelsCliDownload/linux-x64
+⚠️ МИНУС: Требует .NET runtime (libicu). На Wispbyte может не запуститься.
+          Нужна авторизация через Microsoft account.
+✅ ПЛЮС: Действительно персистентный URL от Microsoft (бесплатно).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ВАРИАНТ 9 ⭐ — bore.pub [СЛУЧАЙНЫЙ ПОРТ]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+URL: bore.pub:RANDOM_PORT (не домен, а IP:порт)
+GitHub: https://github.com/ekzhang/bore (11178★)
+⚠️ МИНУС: Не даёт домен, только случайный порт. Не подходит.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ВАРИАНТ 10 ⭐ — Cloudflare Named Tunnel [НУЖЕН АККАУНТ]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+URL: xxx.cfargotunnel.com или custom domain
+Стоимость: Бесплатно (Zero Trust free plan: 50 пользователей)
+⚠️ МИНУС: Нужна регистрация Cloudflare + верификация домена.
+          Quick tunnel (без аккаунта) даёт случайный URL.
+✅ ПЛЮС: Самое надёжное решение для production.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ВАРИАНТЫ ОТВЕРГНУТЫ / НЕ АКТУАЛЬНЫ:
+- Freenom (.tk/.ml/.ga/.cf) — сервис умер в 2023
+- ngrok free tier — каждый раз новый URL, нет кастомного домена бесплатно
+- Pinggy — random URL бесплатно, custom $
+- LocalToNet — бесплатно только 1 туннель с ограниченным BW
+- LocalXpose — ограниченный free tier
+- DuckDNS — заблокирован у пользователя (уже знаем)
+- No-IP — только 1 hostname бесплатно, раз в месяц нужно подтверждать
+- Dynu — бесплатный dynamic DNS (лучше No-IP, нет принудительных подтверждений)
+
+─────────────────────────────────────────────────────────────────────────────
+D. ПЛАН ДЕЙСТВИЙ С УТРА (приоритет)
+─────────────────────────────────────────────────────────────────────────────
+
+ШАГ 1 [СРОЧНО] — Перезапустить Wispbyte сервер
+  Сервер DOWN! Зайди: https://wispbyte.com/client/servers/b016ad1e/
+  Нажми Start/Restart контейнер.
+
+ШАГ 2 [КРИТИЧНО] — Обновить tunnel.py на Wispbyte
+  SSH или SFTP на Wispbyte и выполни:
+  
+  curl -s "https://raw.githubusercontent.com/artemjsdx/FavoriteAPI/HEAD/freeapi/tunnel.py" \
+    -o /home/container/freeapi/tunnel.py
+  
+  Или скопируй через SFTP с локальной машины.
+
+ШАГ 3 [КРИТИЧНО] — Изменить SERVEO_NAME в .env
+  В файле /home/container/.env:
+    БЫЛО: SERVEO_NAME=favoriteapi
+    СТАЛО: SERVEO_NAME=favapi
+  
+  (Или оставь пустым — дефолт в новом tunnel.py тоже "favapi")
+
+ШАГ 4 — Перезапустить python api.py
+  Новый tunnel.py:
+  1. Попробует https://favapi.serveo.net
+  2. Если занято → favapi2, favapi3, ...
+  3. Если Serveo вообще недоступен → localhost.run (random URL)
+  4. Если localhost.run упал → Cloudflare Quick Tunnel
+
+  URL придёт в TG уведомление как раньше.
+
+ШАГ 5 [ОПЦИОНАЛЬНО] — Зарегистрировать DNSHE домен
+  Если хочешь красивый постоянный домен (даже без туннеля):
+  1) Зайди на https://www.dnshe.com
+  2) Зарегистрируйся (бесплатно)
+  3) Создай favoriteapi.us.ci → A record → 82.165.56.146
+  4) Доступ: http://favoriteapi.us.ci:10054
+  
+  Преимущество: URL постоянный навсегда, не зависит от туннелей.
+  Недостаток: Нестандартный порт :10054 нужно писать руками.
+
+─────────────────────────────────────────────────────────────────────────────
+E. ТЕХНИЧЕСКИЕ ДЕТАЛИ НОВОNО tunnel.py v2
+─────────────────────────────────────────────────────────────────────────────
+
+Файл: freeapi/tunnel.py
+Commit: 5205d29
+
+Классы:
+  TunnelManager — главный класс с auto-fallback
+  ServeoManager — backward-compatible alias (старый код работает без изменений)
+  _ServeoAuthError — кастомный exception для auth failure (→ пробует след. имя)
+
+Алгоритм:
+  1. Serveo: пробует [favapi, favapi2, favapi3, favapi4, favapi5, favapiapi]
+     При _ServeoAuthError (субдомен занят) → следующее имя
+     При успешном коннекте → устанавливает URL → держит соединение
+  2. localhost.run: subprocess ssh с IdentityFile (тот же ключ что Serveo)
+     Парсит URL из stdout: https://XXX.lhr.rocks
+  3. Cloudflare: subprocess cloudflared tunnel --url http://localhost:PORT
+     Парсит URL из stdout: https://XXX.trycloudflare.com
+  
+  После успешного тоннеля при обрыве → возвращается к началу (пробует Serveo снова)
+
+SSH ключ:
+  /home/container/serveo_key — сохраняется при первом запуске, переиспользуется.
+  Один ключ для ОБОИХ Serveo и localhost.run.
+  Публичный ключ логируется при старте (можно добавить на localhost.run admin).
+
+─────────────────────────────────────────────────────────────────────────────
+F. СТАТУС ВСЕХ КОМПОНЕНТОВ
+─────────────────────────────────────────────────────────────────────────────
+
+GitHub repo: artemjsdx/FavoriteAPI ✅
+  - tunnel.py v2 с multi-fallback: commit 5205d29 ✅
+
+Phone (Termux bridge): ONLINE ✅
+  Bridge URL: https://doll-substance-dividend-developmental.trycloudflare.com
+
+Wispbyte сервер: ❌ DOWN (Flask не отвечает на 8080)
+  Нужно: перезапустить через панель
+
+Serveo subdomain "favoriteapi": ❌ Занят старым ключом
+  Решение: сменить на "favapi" или любое другое в .env
+
+Persistent SSH key: ✅ Будет создан при первом запуске нового tunnel.py
+  Путь: /home/container/serveo_key
+
+─────────────────────────────────────────────────────────────────────────────
+G. ИСТОЧНИКИ ИССЛЕДОВАНИЯ
+─────────────────────────────────────────────────────────────────────────────
+
+- https://serveo.net — Pricing: free plan = custom subdomains ✅
+- https://github.com/anderspitman/awesome-tunneling — 21k★ comprehensive list
+- https://localhost.run/docs/faq/ — "same SSH key = same URL between reconnects"
+- https://github.com/dnshe/DNSHE-FreeDomains — 1754★ free DNS with REST API
+- https://github.com/is-a-dev/register — 10312★ free .is-a.dev subdomains
+- https://github.com/linuztx/flaredantic — Python tunnel library
+- https://github.com/ekzhang/bore — 11178★ bore.pub (random port)
+- https://github.com/antoniomika/sish — 4629★ Serveo alternative (tuns.sh managed)
+- https://github.com/openziti/zrok — 4438★ free stable shares
+- https://pagekite.net — stable yourname.pagekite.me
+- https://nic.eu.org — free domains since 1996
+- https://freedns.afraid.org — free DNS hosting
+- https://pinggy.io — SSH tunnels, random free
+- https://loophole.cloud — "custom domains for free" (SSLed tunnel)
+
+═══════════════════════════════════════════════════════════════════════════════
