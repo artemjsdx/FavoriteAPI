@@ -16,6 +16,7 @@ Env vars:
 """
 import logging
 import os
+import re
 import select
 import socket
 import subprocess
@@ -40,7 +41,6 @@ def _serveo_candidates(primary: str) -> List[str]:
         f'{primary}bot',
         f'{primary}app',
     ]
-    # Убираем дубли, сохраняем порядок
     seen = set()
     result = []
     for a in alts:
@@ -51,17 +51,6 @@ def _serveo_candidates(primary: str) -> List[str]:
 
 
 class TunnelManager:
-    """
-    Умный менеджер туннелей с автофоллбэком.
-    
-    Порядок провайдеров:
-      serveo → localhost.run → cloudflare
-    
-    При старте пробует Serveo с несколькими именами субдомена.
-    Если Serveo недоступен — переходит на localhost.run.
-    localhost.run использует тот же SSH ключ → URL стабилен между перезапусками.
-    """
-
     def __init__(self, port: int,
                  on_url: Optional[Callable[[str], None]] = None):
         self._port = port
@@ -73,11 +62,16 @@ class TunnelManager:
         key_path = os.environ.get('SERVEO_KEY_PATH', DEFAULT_KEY_PATH)
         self._key_path = os.path.realpath(key_path)
 
-        self._primary_name = os.environ.get('SERVEO_NAME', 'favapi')
+        # Читаем имя и автоматически мигрируем старое favoriteapi -> favapi
+        raw_name = os.environ.get('SERVEO_NAME', 'favapi').strip()
+        if 'favoriteapi' in raw_name.lower():
+            logger.info('[Tunnel] SERVEO_NAME=%r -> мигрируем на favapi', raw_name)
+            raw_name = 'favapi'
+        self._primary_name = raw_name
+
         self._forced_provider = os.environ.get('TUNNEL_PROVIDER', '').lower()
 
     def start(self):
-        """Запустить туннель в фоне."""
         t = threading.Thread(target=self._run, daemon=True, name='tunnel-mgr')
         t.start()
 
@@ -87,8 +81,6 @@ class TunnelManager:
     @property
     def url(self) -> Optional[str]:
         return self._url
-
-    # ── internal ─────────────────────────────────────────────────────────────
 
     def _set_url(self, url: str):
         with self._lock:
@@ -101,7 +93,6 @@ class TunnelManager:
                 logger.error('[Tunnel] on_url callback ошибка: %s', exc)
 
     def _run(self):
-        """Главный цикл: пробуем провайдеров по порядку."""
         providers = self._build_provider_list()
         while not self._stop_event.is_set():
             for provider_fn, label in providers:
@@ -110,7 +101,6 @@ class TunnelManager:
                 logger.info('[Tunnel] Пробую провайдер: %s', label)
                 try:
                     provider_fn()
-                    # provider_fn возвращается только при обрыве
                     logger.warning('[Tunnel] Провайдер %s отвалился', label)
                 except Exception as exc:
                     logger.warning('[Tunnel] Провайдер %s ошибка: %s', label, exc)
@@ -137,9 +127,7 @@ class TunnelManager:
     # ── Serveo ───────────────────────────────────────────────────────────────
 
     def _run_serveo(self):
-        """Пробует субдомены Serveo по очереди, при auth fail — следующий."""
         import paramiko
-
         key = self._load_or_generate_key()
         candidates = _serveo_candidates(self._primary_name)
         backoff = 5
@@ -155,20 +143,18 @@ class TunnelManager:
                     success = True
                     backoff = 5
                     logger.info('[Serveo] Туннель %s.serveo.net отвалился', name)
-                    break  # если соединился и потом упало — повторяем с тем же именем
+                    break
                 except _ServeoAuthError as e:
                     logger.warning('[Serveo] Субдомен %s занят/недоступен: %s', name, e)
                     continue
                 except Exception as e:
                     logger.warning('[Serveo] Ошибка %s: %s', name, e)
-                    break  # общая ошибка — не перебираем имена, даём fallback
+                    break
             if success:
-                # Подключался и отвалился — повторяем через backoff
                 if not self._stop_event.is_set():
                     time.sleep(backoff)
                     backoff = min(backoff * 2, 60)
             else:
-                # Все имена заняты или ошибка подключения
                 raise RuntimeError(f'Serveo: все кандидаты {candidates} недоступны')
 
     def _serveo_connect(self, key, name: str):
@@ -212,10 +198,7 @@ class TunnelManager:
     # ── localhost.run ─────────────────────────────────────────────────────────
 
     def _run_localhostrun(self):
-        """SSH туннель через localhost.run. Тот же ключ = тот же URL между перезапусками."""
-        # Убеждаемся что ключ есть
         self._load_or_generate_key()
-
         backoff = 5
         while not self._stop_event.is_set():
             try:
@@ -229,14 +212,15 @@ class TunnelManager:
             backoff = min(backoff * 2, 120)
 
     def _localhostrun_connect(self):
-        """Один коннект к localhost.run через subprocess ssh."""
         cmd = [
             'ssh',
             '-o', 'StrictHostKeyChecking=no',
+            '-o', 'UserKnownHostsFile=/dev/null',
             '-o', f'IdentityFile={self._key_path}',
             '-o', 'ServerAliveInterval=30',
             '-o', 'ServerAliveCountMax=3',
             '-o', 'BatchMode=yes',
+            '-o', 'LogLevel=QUIET',
             '-R', f'80:localhost:{self._port}',
             'localhost.run',
         ]
@@ -244,31 +228,56 @@ class TunnelManager:
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.PIPE,
             text=True,
         )
 
         url_found = False
-        try:
+        # Читаем stdout в отдельном потоке чтобы stderr не блокировал
+        lines_buf = []
+
+        def _read_stdout():
             for line in proc.stdout:
-                line = line.rstrip()
-                logger.debug('[localhost.run] %s', line)
-                # URL выглядит как: https://xxxxxxxxxxxxx.lhr.rocks tunneled with tls...
-                # или: your url is: https://xxxxxxxxxxxxx.lhr.rocks
-                if 'https://' in line and ('localhost.run' in line or 'lhr.rocks' in line):
-                    import re
-                    m = re.search(r'(https://[\w\-]+\.(?:lhr\.rocks|localhost\.run))', line)
+                lines_buf.append(('out', line.rstrip()))
+        def _read_stderr():
+            for line in proc.stderr:
+                lines_buf.append(('err', line.rstrip()))
+
+        t1 = threading.Thread(target=_read_stdout, daemon=True)
+        t2 = threading.Thread(target=_read_stderr, daemon=True)
+        t1.start(); t2.start()
+
+        deadline = time.time() + 30  # ждём URL максимум 30 секунд
+        try:
+            while time.time() < deadline and not self._stop_event.is_set():
+                while lines_buf:
+                    src, line = lines_buf.pop(0)
+                    logger.debug('[localhost.run][%s] %s', src, line)
+                    # Форматы URL от localhost.run:
+                    # https://xxxxx.lhr.rocks tunneled with tls termination
+                    # your url is: https://xxxxx.lhr.rocks
+                    # Connect to http://localhost.run:80 []
+                    # Forwarding HTTP traffic from https://xxxxx.lhr.rocks
+                    m = re.search(r'(https://[w-]+.(?:lhr.rocks|localhost.run))', line)
                     if m:
                         self._set_url(m.group(1))
                         url_found = True
-                if self._stop_event.is_set():
+                if url_found:
                     break
+                time.sleep(0.2)
+
+            if url_found:
+                # Туннель активен — ждём пока процесс жив
+                while proc.poll() is None and not self._stop_event.is_set():
+                    time.sleep(2)
         finally:
             proc.terminate()
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+            t1.join(timeout=2)
+            t2.join(timeout=2)
 
         if not url_found:
             raise RuntimeError('localhost.run: URL не найден в выводе')
@@ -276,10 +285,9 @@ class TunnelManager:
     # ── Cloudflare Quick Tunnel ───────────────────────────────────────────────
 
     def _run_cloudflare(self):
-        """Cloudflare Quick Tunnel через cloudflared. URL случайный каждый раз."""
         cloudflared = self._find_cloudflared()
         if not cloudflared:
-            raise RuntimeError('cloudflared не найден (cloudflared, cloudflared-linux-amd64)')
+            raise RuntimeError('cloudflared не найден')
 
         backoff = 5
         while not self._stop_event.is_set():
@@ -310,9 +318,8 @@ class TunnelManager:
             for line in proc.stdout:
                 line = line.rstrip()
                 logger.debug('[Cloudflare] %s', line)
-                if 'trycloudflare.com' in line or ('https://' in line and '.cloudflare' in line):
-                    import re
-                    m = re.search(r'(https://[\w\-]+\.trycloudflare\.com)', line)
+                if 'trycloudflare.com' in line:
+                    m = re.search(r'(https://[w-]+.trycloudflare.com)', line)
                     if m:
                         self._set_url(m.group(1))
                         url_found = True
@@ -376,7 +383,6 @@ class _ServeoAuthError(Exception):
 
 
 def _forward_sockets(src, dst):
-    """Двусторонний проброс данных между двумя сокетами."""
     try:
         while True:
             r, _, _ = select.select([src, dst], [], [], 5)
