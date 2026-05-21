@@ -238,7 +238,9 @@ if __name__ == '__main__':
 
     # Serveo — единственный туннель, постоянный URL https://favoriteapi.serveo.net
     # Работает через порт 443 HTTPS, проходит через любого оператора.
-    _serveo_name = os.environ.get("SERVEO_NAME", "favoriteapi").strip()
+    _serveo_name = os.environ.get("SERVEO_NAME", "favapi").strip()
+    if "favoriteapi" in _serveo_name.lower():
+        _serveo_name = "favapi"
     serveo = ServeoManager(port=port, name=_serveo_name, on_url=on_tunnel_url)
     serveo.start()
 
