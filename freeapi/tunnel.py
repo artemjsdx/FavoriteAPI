@@ -1,12 +1,15 @@
 """
-ServeoManager -- Serveo SSH tunnel via subprocess.
+ServeoManager — SSH tunnel via serveo.net using subprocess.
 
-Runs: ssh -R <subdomain>:80:localhost:<port> serveo.net
-Parses stdout to detect active URL.
+Strategy:
+  1. Try custom subdomain (SERVEO_NAME, default: favapi)
+  2. If taken/rejected — connect without subdomain (Serveo assigns random URL)
+
+SSH key is stored in SERVEO_KEY_PATH. Same key = same random URL across restarts.
 
 Env vars:
-  SERVEO_KEY_PATH  -- path to SSH key (default: ./serveo_key)
-  SERVEO_NAME      -- desired subdomain (default: favapi)
+  SERVEO_KEY_PATH  -- path to SSH private key (default: ./serveo_key)
+  SERVEO_NAME      -- preferred subdomain (default: favapi)
 """
 import logging
 import os
@@ -14,7 +17,7 @@ import re
 import subprocess
 import threading
 import time
-from typing import Callable, List, Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger('freeapi')
 
@@ -23,25 +26,15 @@ DEFAULT_KEY_PATH = os.path.join(
 )
 
 
-def _serveo_candidates(primary: str) -> List[str]:
-    """Subdomain candidates: primary first, then fallbacks."""
-    seen = set()
-    result = []
-    for a in [primary, f'{primary}2', f'{primary}3', f'{primary}x', f'{primary}app']:
-        if a not in seen:
-            seen.add(a)
-            result.append(a)
-    return result
-
-
 def _ensure_key(key_path: str) -> bool:
-    """Generate SSH key if missing. Returns True on success."""
+    """Generate SSH key if not present."""
     if os.path.exists(key_path):
+        logger.info('[Serveo] Using existing key: %s', key_path)
         return True
     try:
-        os.makedirs(os.path.dirname(os.path.abspath(key_path)), exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(key_path)) or '.', exist_ok=True)
         subprocess.run(
-            ['ssh-keygen', '-t', 'rsa', '-b', '2048', '-f', key_path, '-N', '', '-q'],
+            ['ssh-keygen', '-t', 'ed25519', '-f', key_path, '-N', '', '-q'],
             check=True, capture_output=True,
         )
         logger.info('[Serveo] SSH key generated: %s', key_path)
@@ -51,10 +44,32 @@ def _ensure_key(key_path: str) -> bool:
         return False
 
 
+def _ssh_connect(key_path: str, port: int, subdomain: Optional[str]) -> subprocess.Popen:
+    """Start SSH process to serveo.net."""
+    if subdomain:
+        remote = f'{subdomain}:80:localhost:{port}'
+    else:
+        remote = f'80:localhost:{port}'
+    cmd = [
+        'ssh',
+        '-o', 'StrictHostKeyChecking=no',
+        '-o', 'UserKnownHostsFile=/dev/null',
+        '-o', f'IdentityFile={key_path}',
+        '-o', 'ServerAliveInterval=30',
+        '-o', 'ServerAliveCountMax=3',
+        '-o', 'BatchMode=yes',
+        '-o', 'LogLevel=QUIET',
+        '-R', remote,
+        'serveo.net',
+    ]
+    logger.info('[Serveo] ssh -R %s serveo.net', remote)
+    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+
 class ServeoManager:
     """
     Serveo tunnel via subprocess SSH.
-    Tries primary subdomain first, then fallbacks if taken.
+    Tries preferred subdomain; falls back to Serveo-assigned random URL.
     """
 
     def __init__(self, port: int, name: str = '',
@@ -91,75 +106,61 @@ class ServeoManager:
 
     def _run(self):
         if not _ensure_key(self._key_path):
-            logger.error('[Serveo] No SSH key, tunnel disabled')
+            logger.error('[Serveo] No SSH key available, tunnel disabled')
             return
 
-        candidates = _serveo_candidates(self._primary_name)
-        idx = 0
+        # Try: preferred subdomain first, then random (None)
+        attempts = [self._primary_name, None]
+        attempt_idx = 0
         backoff = 5
 
         while not self._stop_event.is_set():
-            name = candidates[idx % len(candidates)]
-            logger.info('[Serveo] Trying subdomain: %s.serveo.net', name)
-            result = self._connect(name)
-            if result == 'taken':
-                logger.warning('[Serveo] %s taken, trying next', name)
-                idx += 1
-                if idx >= len(candidates):
-                    logger.warning('[Serveo] All candidates tried, waiting %ss', backoff)
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, 60)
-                    idx = 0
+            subdomain = attempts[attempt_idx % len(attempts)]
+            label = f'{subdomain}.serveo.net' if subdomain else 'serveo.net (random URL)'
+            logger.info('[Serveo] Connecting: %s', label)
+
+            result = self._connect(subdomain)
+
+            if result == 'taken' and subdomain is not None:
+                logger.warning('[Serveo] Subdomain %s taken, switching to random URL', subdomain)
+                attempt_idx = 1  # go to random
+                time.sleep(2)
                 continue
-            # dropped or error — reconnect with same name after backoff
+
+            if result == 'ok':
+                backoff = 5  # reset on clean reconnect
+
             if not self._stop_event.is_set():
-                logger.info('[Serveo] Reconnecting %s in %ss...', name, backoff)
+                logger.info('[Serveo] Reconnecting in %ss...', backoff)
                 time.sleep(backoff)
-                backoff = min(backoff * 2, 30)
+                backoff = min(backoff * 2, 60)
 
-    def _connect(self, name: str) -> str:
+    def _connect(self, subdomain: Optional[str]) -> str:
         """
-        Run SSH tunnel to serveo.net. Returns:
-          'ok'    -- connected, then dropped
-          'taken' -- subdomain refused
-          'error' -- could not connect
+        Run SSH connection. Returns:
+          'ok'    -- connected and got URL, then dropped
+          'taken' -- subdomain rejected by Serveo
+          'error' -- SSH error or no URL found
         """
-        cmd = [
-            'ssh',
-            '-o', 'StrictHostKeyChecking=no',
-            '-o', 'UserKnownHostsFile=/dev/null',
-            '-o', f'IdentityFile={self._key_path}',
-            '-o', 'ServerAliveInterval=30',
-            '-o', 'ServerAliveCountMax=3',
-            '-o', 'BatchMode=yes',
-            '-o', 'LogLevel=QUIET',
-            '-R', f'{name}:80:localhost:{self._port}',
-            'serveo.net',
-        ]
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-
+        proc = _ssh_connect(self._key_path, self._port, subdomain)
         url_found = False
-        status = 'error'
+        taken = False
+
         try:
             for line in proc.stdout:
                 line = line.rstrip()
                 if line:
-                    logger.debug('[Serveo] %s', line)
+                    logger.debug('[Serveo] >> %s', line)
                 low = line.lower()
-                if 'taken' in low or 'in use' in low or 'permission denied' in low:
-                    status = 'taken'
+                # Serveo signals subdomain conflict
+                if any(x in low for x in ('taken', 'in use', 'permission denied', 'refused'))  and subdomain:
+                    taken = True
                     break
+                # Parse URL from Serveo output
                 m = re.search(r'(https://[\w\-]+\.serveo\.net)', line)
                 if m:
-                    url = m.group(1)
-                    self._set_url(url)
+                    self._set_url(m.group(1))
                     url_found = True
-                    status = 'ok'
                 if self._stop_event.is_set():
                     break
         finally:
@@ -169,9 +170,11 @@ class ServeoManager:
             except subprocess.TimeoutExpired:
                 proc.kill()
 
+        if taken:
+            return 'taken'
         if url_found:
             return 'ok'
-        return status
+        return 'error'
 
 
 # Backward compatibility aliases
