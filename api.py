@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Целевой путь — Android-хранилище (Termux). Если каталога нет / нет прав —
 # fallback в `./logi.txt` рядом с api.py.
 # ─────────────────────────────────────────────────────────────────────────────
-LOG_DUMP_PATH = '/storage/emulated/0/Цхранилище/Мусор/logi.txt'
+LOG_DUMP_PATH = os.environ.get('LOG_DUMP_PATH', os.path.join(os.getcwd(), 'logi.txt'))
 _LOG_BUFFER_MAX = 50000  # храним последние 50k записей в памяти
 
 
@@ -160,7 +160,7 @@ def _pick_free_port(host: str, preferred: int, attempts: int = 25) -> int:
 
 class GracefulShutdown:
     """
-    Перехватывает SIGINT/SIGTERM, завершает cloudflared и сигнализирует
+    Перехватывает SIGINT/SIGTERM, завершает туннель и сигнализирует
     главному потоку об остановке.
     """
     def __init__(self):
@@ -236,11 +236,9 @@ if __name__ == '__main__':
                 daemon=True, name='tg-notify',
             ).start()
 
-    # Serveo — единственный туннель, постоянный URL https://favoriteapi.serveo.net
+    # Serveo — единственный туннель, постоянный URL https://favapi.serveo.net
     # Работает через порт 443 HTTPS, проходит через любого оператора.
     _serveo_name = os.environ.get("SERVEO_NAME", "favapi").strip()
-    if "favoriteapi" in _serveo_name.lower():
-        _serveo_name = "favapi"
     serveo = ServeoManager(port=port, name=_serveo_name, on_url=on_tunnel_url)
     serveo.start()
 
