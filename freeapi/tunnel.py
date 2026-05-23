@@ -2,14 +2,8 @@
   ServeoManager -- SSH tunnel via serveo.net using subprocess.
 
   Strategy:
-    1. Try custom subdomain (SERVEO_NAME, default: favapi)
+    1. Try custom subdomain (SERVEO_NAME env var, default: favapi)
     2. If taken/rejected -- connect without subdomain (Serveo assigns random URL)
-
-  SSH key is stored in SERVEO_KEY_PATH. Same key = same random URL across restarts.
-
-  Env vars:
-    SERVEO_KEY_PATH  -- path to SSH private key (default: ./serveo_key)
-    SERVEO_NAME      -- preferred subdomain (default: favapi)
   """
   import logging
   import os
@@ -43,16 +37,16 @@
           return False
 
 
-  def _ssh_connect(key_path: str, port: int, subdomain: Optional[str]) -> subprocess.Popen:
+  def _ssh_connect(key_path: str, port: int, subdomain) -> subprocess.Popen:
       if subdomain:
-          remote = f'{subdomain}:80:localhost:{port}'
+          remote = '{}:80:localhost:{}'.format(subdomain, port)
       else:
-          remote = f'80:localhost:{port}'
+          remote = '80:localhost:{}'.format(port)
       cmd = [
           'ssh',
           '-o', 'StrictHostKeyChecking=no',
           '-o', 'UserKnownHostsFile=/dev/null',
-          '-o', f'IdentityFile={key_path}',
+          '-o', 'IdentityFile=' + key_path,
           '-o', 'ServerAliveInterval=30',
           '-o', 'ServerAliveCountMax=3',
           '-o', 'BatchMode=yes',
@@ -65,14 +59,12 @@
 
 
   class ServeoManager:
-      """Serveo tunnel via subprocess SSH."""
-
       def __init__(self, port: int, name: str = '',
-                   on_url: Optional[Callable[[str], None]] = None):
+                   on_url=None):
           self._port = port
           self._on_url = on_url
           self._stop_event = threading.Event()
-          self._url: Optional[str] = None
+          self._url = None
           self._lock = threading.Lock()
           key_path = os.environ.get('SERVEO_KEY_PATH', DEFAULT_KEY_PATH)
           self._key_path = os.path.realpath(key_path)
@@ -86,7 +78,7 @@
           self._stop_event.set()
 
       @property
-      def url(self) -> Optional[str]:
+      def url(self):
           return self._url
 
       def _set_url(self, url: str):
@@ -110,7 +102,7 @@
 
           while not self._stop_event.is_set():
               subdomain = attempts[attempt_idx % len(attempts)]
-              label = f'{subdomain}.serveo.net' if subdomain else 'serveo.net (random URL)'
+              label = '{}.serveo.net'.format(subdomain) if subdomain else 'serveo.net (random URL)'
               logger.info('[Serveo] Connecting: %s', label)
 
               result = self._connect(subdomain)
@@ -129,7 +121,7 @@
                   time.sleep(backoff)
                   backoff = min(backoff * 2, 60)
 
-      def _connect(self, subdomain: Optional[str]) -> str:
+      def _connect(self, subdomain) -> str:
           proc = _ssh_connect(self._key_path, self._port, subdomain)
           url_found = False
           taken = False
