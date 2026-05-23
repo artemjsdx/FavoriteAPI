@@ -13,20 +13,34 @@ DEFAULT_ENV = {
     "DATABASE_PATH": "database.db",
     "TG_NOTIFY_TOKEN": "8225688485:AAFkZuaEZKmBFIGI69x0osW7tHmEMQ1Qak8",
     "TG_NOTIFY_CHATS": "3771442024",
+    "NGROK_TOKEN": "3E8zlItFVEP093s1A9LMDKHVydb_52kHA72tM7oDTjLmzCcr1",
+    "NGROK_DOMAIN": "battalion-unthawed-tucking.ngrok-free.dev",
 }
 
 
 def _ensure_env():
     env_path = os.path.join(BASE_DIR, ".env")
+    existing = {}
     if os.path.exists(env_path):
-        return
-    secret = secrets.token_hex(32)
-    parts = ["SESSION_SECRET=" + secret]
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, _, v = line.partition("=")
+                    existing[k.strip()] = v.strip()
+    changed = False
     for k, v in DEFAULT_ENV.items():
-        parts.append(k + "=" + v)
-    with open(env_path, "w") as f:
-        f.write("\n".join(parts) + "\n")
-    print("[boot] .env created with defaults", flush=True)
+        if k not in existing:
+            existing[k] = v
+            changed = True
+    if not existing.get("SESSION_SECRET"):
+        existing["SESSION_SECRET"] = secrets.token_hex(32)
+        changed = True
+    if changed:
+        lines = ["{}={}".format(k, v) for k, v in existing.items()]
+        with open(env_path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        print("[boot] .env updated with missing defaults", flush=True)
 
 
 def _update_repo():
