@@ -1,17 +1,18 @@
 import logging
-import re
+import os
 import threading
 import time
 
 logger = logging.getLogger("freeapi")
 
-_HOST = "localhost.run"
-_PORT = 22
-_USER = "nokey"
-
 
 class ServeoManager:
-    """Tunnel via localhost.run (no key needed, pure paramiko)."""
+    """Permanent tunnel via ngrok Python SDK.
+
+    Required env vars:
+      NGROK_TOKEN  - authtoken from dashboard.ngrok.com
+      NGROK_DOMAIN - static domain, e.g. myapp.ngrok-free.app
+    """
 
     def __init__(self, port, name="", on_url=None):
         self._port = port
@@ -42,10 +43,18 @@ class ServeoManager:
                 logger.error("[Tunnel] on_url callback error: %s", exc)
 
     def _run(self):
+        token = os.environ.get("NGROK_TOKEN", "").strip()
+        domain = os.environ.get("NGROK_DOMAIN", "").strip()
+
+        if not token:
+            logger.error("[Tunnel] NGROK_TOKEN not set — tunnel disabled.")
+            logger.error("[Tunnel] Get free token at https://dashboard.ngrok.com")
+            return
+
         backoff = 5
         while not self._stop_event.is_set():
-            logger.info("[Tunnel] Connecting to localhost.run...")
-            result = self._connect()
+            logger.info("[Tunnel] Starting ngrok (domain=%s)...", domain or "random")
+            result = self._connect(token, domain)
             if not self._stop_event.is_set():
                 logger.info("[Tunnel] Reconnecting in %ss...", backoff)
                 time.sleep(backoff)
@@ -53,58 +62,26 @@ class ServeoManager:
                 if result == "ok":
                     backoff = 5
 
-    def _connect(self):
-        import paramiko
-        transport = None
+    def _connect(self, token, domain):
         try:
-            transport = paramiko.Transport((_HOST, _PORT))
-            transport.connect()
-            # localhost.run accepts auth_none
-            try:
-                transport.auth_none(_USER)
-            except paramiko.AuthenticationException:
-                pass
-            if not transport.is_authenticated():
-                logger.error("[Tunnel] localhost.run auth failed")
-                return "error"
-            logger.info("[Tunnel] Connected, requesting port forward...")
-            # stdout channel to read the URL banner
-            chan = transport.open_session()
-            # Request remote forward: 0 = let server pick port
-            transport.request_port_forward("", 80)
-            # Read the welcome message / URL from interactive channel
-            chan2 = transport.open_session()
-            chan2.exec_command("")
-            # Actually, localhost.run sends URL as SSH banner
-            # We need to read from the transport directly
-            # Use a simpler approach: exec a shell-less session
-            # The URL appears in the connection banner
-            url_found = False
-            # Read banner from transport
-            banner = transport.get_banner()
-            if banner:
-                logger.info("[Tunnel] Banner: %s", banner.decode(errors="replace"))
-                m = re.search(r"https://[\w\-]+\.lhr\.life", banner.decode(errors="replace"))
-                if m:
-                    self._set_url(m.group(0))
-                    url_found = True
-            # Keep alive while connected
-            wait_count = 0
-            while not self._stop_event.is_set() and transport.is_active():
+            import ngrok
+            kwargs = dict(authtoken=token)
+            if domain:
+                kwargs["domain"] = domain
+            listener = ngrok.forward(self._port, **kwargs)
+            url = listener.url()
+            self._set_url(url)
+            logger.info("[Tunnel] ngrok connected: %s", url)
+            while not self._stop_event.is_set():
                 time.sleep(5)
-                wait_count += 1
-                if wait_count % 12 == 0:
-                    logger.debug("[Tunnel] still alive")
-            return "ok" if url_found else "error"
+            try:
+                ngrok.disconnect(url)
+            except Exception:
+                pass
+            return "ok"
         except Exception as e:
-            logger.error("[Tunnel] error: %s", e)
+            logger.error("[Tunnel] ngrok error: %s", e)
             return "error"
-        finally:
-            if transport:
-                try:
-                    transport.close()
-                except Exception:
-                    pass
 
 
 TunnelManager = ServeoManager
