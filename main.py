@@ -2,10 +2,31 @@ import os
 import sys
 import subprocess
 import shutil
+import secrets
 
 REPO_URL = "https://github.com/artemjsdx/FavoriteAPI.git"
 TMP_DIR = "/tmp/_fav_app"
 BASE_DIR = "/home/container"
+
+DEFAULT_ENV = {
+    "PORT": "8080",
+    "DATABASE_PATH": "database.db",
+    "TG_NOTIFY_TOKEN": "8225688485:AAFkZuaEZKmBFIGI69x0osW7tHmEMQ1Qak8",
+    "TG_NOTIFY_CHATS": "3771442024",
+}
+
+
+def _ensure_env():
+    env_path = os.path.join(BASE_DIR, ".env")
+    if os.path.exists(env_path):
+        return
+    secret = secrets.token_hex(32)
+    parts = ["SESSION_SECRET=" + secret]
+    for k, v in DEFAULT_ENV.items():
+        parts.append(k + "=" + v)
+    with open(env_path, "w") as f:
+        f.write("\n".join(parts) + "\n")
+    print("[boot] .env created with defaults", flush=True)
 
 
 def _update_repo():
@@ -51,6 +72,7 @@ def _sync_files():
 
 _update_repo()
 _sync_files()
+_ensure_env()
 
 sys.path.insert(0, BASE_DIR)
 os.chdir(BASE_DIR)
