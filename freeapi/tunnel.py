@@ -13,39 +13,46 @@ DEFAULT_KEY_PATH = os.path.join(
 
 
 def _ensure_key(key_path):
-    if os.path.exists(key_path):
+    pub_path = key_path + ".pub"
+    if os.path.exists(key_path) and os.path.exists(pub_path):
         logger.info("[Serveo] Using existing key: %s", key_path)
         return True
 
     os.makedirs(os.path.dirname(os.path.abspath(key_path)) or ".", exist_ok=True)
 
     # Try ssh-keygen first
-    try:
-        r = subprocess.run(
-            ["ssh-keygen", "-t", "ed25519", "-f", key_path, "-N", "", "-q"],
-            capture_output=True,
-        )
-        if r.returncode == 0:
-            logger.info("[Serveo] SSH key generated via ssh-keygen")
-            return True
-    except FileNotFoundError:
-        pass
+    if not os.path.exists(key_path):
+        try:
+            r = subprocess.run(
+                ["ssh-keygen", "-t", "ed25519", "-f", key_path, "-N", "", "-q"],
+                capture_output=True,
+            )
+            if r.returncode == 0:
+                logger.info("[Serveo] SSH key generated via ssh-keygen")
+                return True
+        except FileNotFoundError:
+            pass
 
-    # Fallback: generate via Python cryptography (always installed with paramiko)
+    # Fallback: generate via Python cryptography
     try:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
         from cryptography.hazmat.primitives.serialization import (
-            Encoding, PrivateFormat, NoEncryption
+            Encoding, PrivateFormat, PublicFormat, NoEncryption
         )
-        key = Ed25519PrivateKey.generate()
-        pem = key.private_bytes(Encoding.PEM, PrivateFormat.OpenSSH, NoEncryption())
+        priv_key = Ed25519PrivateKey.generate()
+        # Write private key in OpenSSH PEM format
+        priv_pem = priv_key.private_bytes(Encoding.PEM, PrivateFormat.OpenSSH, NoEncryption())
         with open(key_path, "wb") as f:
-            f.write(pem)
+            f.write(priv_pem)
         try:
             os.chmod(key_path, 0o600)
         except Exception:
             pass
-        logger.info("[Serveo] SSH key generated via Python cryptography")
+        # Write public key in OpenSSH format
+        pub_bytes = priv_key.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
+        with open(pub_path, "wb") as f:
+            f.write(pub_bytes + b"\n")
+        logger.info("[Serveo] SSH key pair generated via Python cryptography")
         return True
     except Exception as e:
         logger.error("[Serveo] Failed to generate key: %s", e)
@@ -54,44 +61,10 @@ def _ensure_key(key_path):
 
 def _ssh_available():
     try:
-        r = subprocess.run(["ssh", "-V"], capture_output=True)
+        subprocess.run(["ssh", "-V"], capture_output=True)
         return True
     except FileNotFoundError:
         return False
-
-
-def _ssh_connect(key_path, port, subdomain):
-    if subdomain:
-        remote = "{}:80:localhost:{}".format(subdomain, port)
-    else:
-        remote = "80:localhost:{}".format(port)
-    cmd = [
-        "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "IdentityFile=" + key_path,
-        "-o", "ServerAliveInterval=30",
-        "-o", "ServerAliveCountMax=3",
-        "-o", "BatchMode=yes",
-        "-o", "LogLevel=QUIET",
-        "-R", remote,
-        "serveo.net",
-    ]
-    logger.info("[Serveo] ssh -R %s serveo.net", remote)
-    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-
-
-def _paramiko_connect(key_path, port, subdomain):
-    import paramiko
-    import socket
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    pkey = paramiko.Ed25519Key(filename=key_path)
-    client.connect("serveo.net", port=22, username="serveo", pkey=pkey)
-    transport = client.get_transport()
-    name = subdomain if subdomain else ""
-    transport.request_port_forward(name, 80)
-    return client, transport
 
 
 class ServeoManager:
@@ -104,7 +77,6 @@ class ServeoManager:
         key_path = os.environ.get("SERVEO_KEY_PATH", DEFAULT_KEY_PATH)
         self._key_path = os.path.realpath(key_path)
         self._primary_name = name or os.environ.get("SERVEO_NAME", "favapi")
-        self._use_subprocess = None
 
     def start(self):
         t = threading.Thread(target=self._run, daemon=True, name="serveo-mgr")
@@ -132,9 +104,8 @@ class ServeoManager:
             logger.error("[Serveo] No SSH key, tunnel disabled")
             return
 
-        self._use_subprocess = _ssh_available()
-        mode = "subprocess ssh" if self._use_subprocess else "paramiko"
-        logger.info("[Serveo] Using %s for tunnel", mode)
+        use_ssh = _ssh_available()
+        logger.info("[Serveo] Using %s for tunnel", "subprocess ssh" if use_ssh else "paramiko")
 
         attempts = [self._primary_name, None]
         attempt_idx = 0
@@ -145,7 +116,10 @@ class ServeoManager:
             label = "{}.serveo.net".format(subdomain) if subdomain else "serveo.net (random)"
             logger.info("[Serveo] Connecting: %s", label)
 
-            result = self._connect(subdomain)
+            if use_ssh:
+                result = self._connect_subprocess(subdomain)
+            else:
+                result = self._connect_paramiko(subdomain)
 
             if result == "taken" and subdomain is not None:
                 logger.warning("[Serveo] %s taken, switching to random", subdomain)
@@ -153,28 +127,43 @@ class ServeoManager:
                 time.sleep(2)
                 continue
 
-            if result == "ok":
-                backoff = 5
-
             if not self._stop_event.is_set():
                 logger.info("[Serveo] Reconnecting in %ss...", backoff)
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 60)
-
-    def _connect(self, subdomain):
-        if self._use_subprocess:
-            return self._connect_subprocess(subdomain)
-        return self._connect_paramiko(subdomain)
+                if result == "ok":
+                    backoff = 5
 
     def _connect_subprocess(self, subdomain):
-        proc = _ssh_connect(self._key_path, self._port, subdomain)
+        if subdomain:
+            remote = "{}:80:localhost:{}".format(subdomain, self._port)
+        else:
+            remote = "80:localhost:{}".format(self._port)
+        cmd = [
+            "ssh",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-i", self._key_path,
+            "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=3",
+            "-o", "ExitOnForwardFailure=yes",
+            "-R", remote,
+            "-p", "22",
+            "serveo.net",
+        ]
+        logger.info("[Serveo] cmd: %s", " ".join(cmd))
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+        )
         url_found = False
         taken = False
+        output_lines = []
         try:
             for line in proc.stdout:
                 line = line.rstrip()
                 if line:
-                    logger.debug("[Serveo] >> %s", line)
+                    logger.info("[Serveo] >> %s", line)
+                    output_lines.append(line)
                 low = line.lower()
                 if any(x in low for x in ("taken", "in use", "permission denied", "refused")) and subdomain:
                     taken = True
@@ -191,6 +180,8 @@ class ServeoManager:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        if not output_lines:
+            logger.warning("[Serveo] ssh produced no output (key auth may have failed silently)")
         if taken:
             return "taken"
         return "ok" if url_found else "error"
@@ -204,16 +195,16 @@ class ServeoManager:
             client.connect("serveo.net", port=22, username="serveo", pkey=pkey)
             transport = client.get_transport()
             name = subdomain if subdomain else ""
-            remote_port = transport.request_port_forward(name, 80)
-            url = "https://{}.serveo.net".format(name) if name else "https://serveo.net:{}" .format(remote_port)
+            transport.request_port_forward(name, 80)
+            if name:
+                url = "https://{}.serveo.net".format(name)
+            else:
+                url = "https://serveo.net"
             self._set_url(url)
             while not self._stop_event.is_set() and transport.is_active():
                 time.sleep(5)
             client.close()
             return "ok"
-        except paramiko.AuthenticationException:
-            logger.warning("[Serveo] paramiko auth failed for %s", subdomain)
-            return "taken"
         except Exception as e:
             logger.error("[Serveo] paramiko error: %s", e)
             return "error"
