@@ -353,7 +353,10 @@ class SetupFlow:
         self.setup_id = setup_id
         self.user_id = user_id
         self.account_id = account_id
-        self.start_step = max(1, min(int(start_step or 1), 6))
+        # W4: check_spambot выпилен — шагов стало 5 (было 6). start_step зажимаем в [1,5].
+        # Старыеsetup-сессии со step=6 из прежней схемы корректно доезжают до финала
+        # (clamp + «шаг 5 выполняется всегда»).
+        self.start_step = max(1, min(int(start_step or 1), 5))
 
     async def run(self):
         try:
@@ -362,39 +365,38 @@ class SetupFlow:
                 sponsors = SponsorHandler(tg)
                 await tg.ensure_authorized()
                 bot = await tg.bot()
-                # ─── Сессия 6, S2: проверяем cancel-флаг между шагами.
-                # Если юзер нажал «Отмена» — пропускаем все промежуточные
-                # шаги и сразу переходим к шагу 6 (выдача ключа).
+                # ─── W4: шаг «Проверка аккаунта / SpamBot» удалён.
+                # check_spambot больше не вызывается — он банил онбординг на
+                # чужом @SpamBot и часто ложноположительно кричал TG_SPAM_503.
+                # Если юзер нажал «Отмена» — пропускаем промежуточные шаги и
+                # сразу переходим к шагу 5 (выдача ключа).
                 if self.start_step <= 1 and not is_cancelled(self.setup_id):
-                    await self.step(1, 'Проверяем аккаунт...')
-                    await check_spambot(tg)
-                if self.start_step <= 2 and not is_cancelled(self.setup_id):
-                    await self.step(2, 'Запускаем ИИ...')
+                    await self.step(1, 'Запускаем ИИ...')
                     await tg.send_message(bot, '/start')
-                    await self.wait_with_progress(2, 'Запуск ИИ-бота', 20, interval=5)
-                if self.start_step <= 3 and not is_cancelled(self.setup_id):
-                    await self.step(3, 'Обучаем ИИ...')
+                    await self.wait_with_progress(1, 'Запуск ИИ-бота', 20, interval=5)
+                if self.start_step <= 2 and not is_cancelled(self.setup_id):
+                    await self.step(2, 'Обучаем ИИ...')
                     await training_with_progress(tg, sponsors, bot, self.setup_id)
-                if self.start_step <= 4 and not is_cancelled(self.setup_id):
-                    await self.step(4, 'Настраиваем параметры...')
+                if self.start_step <= 3 and not is_cancelled(self.setup_id):
+                    await self.step(3, 'Настраиваем параметры...')
                     await configure_gpt(tg, bot)
-                if self.start_step <= 5 and not is_cancelled(self.setup_id):
-                    await self.step(5, 'Настраиваем бесплатный доступ...')
+                if self.start_step <= 4 and not is_cancelled(self.setup_id):
+                    await self.step(4, 'Настраиваем бесплатный доступ...')
                     promo_message = await open_promos(tg, bot)
                     await PromoActivator(tg).activate(bot, promo_message)
-                # Шаг 6 выполняется ВСЕГДА — в т. ч. если пришла отмена
+                # Шаг 5 выполняется ВСЕГДА — в т. ч. если пришла отмена
                 # на одном из промежуточных шагов (skip-to-key flow).
-                cancelled_skip = is_cancelled(self.setup_id) and self.start_step < 6
+                cancelled_skip = is_cancelled(self.setup_id) and self.start_step < 5
                 final_label = 'Завершение без обучения...' if cancelled_skip else 'Финальная настройка...'
                 done_label = 'Готово (без обучения)!' if cancelled_skip else 'Готово!'
-                await self.step(6, final_label)
+                await self.step(5, final_label)
                 await tg.send_message(bot, '🔄 Сбросить историю')
                 repo.update_tg_account(self.account_id, is_valid=1, setup_done=1, session_string=encrypt_text(tg.client.session.save()))
                 key = repo.get_account_key(self.user_id, self.account_id)
                 if not key:
                     key = repo.create_api_key(self.user_id, self.account_id, generate_api_key(), 'Мой ключ', DEFAULT_MODEL_ID)
-                repo.update_setup_session(self.setup_id, status='done', current_step=6, step_label=done_label, error_msg=None)
-                update_progress(self.setup_id, step=6, stepLabel=done_label, done=True, error=None, canRetry=False, apiKey=key['key_value'])
+                repo.update_setup_session(self.setup_id, status='done', current_step=5, step_label=done_label, error_msg=None)
+                update_progress(self.setup_id, step=5, stepLabel=done_label, done=True, error=None, canRetry=False, apiKey=key['key_value'])
                 # M5: личное TG-уведомление об успешном завершении
                 # фоновой настройки (best-effort, всегда после успеха).
                 self._notify_setup_status(success=True, key_value=key['key_value'])
@@ -505,15 +507,11 @@ async def sign_in_with_code(api_id, api_hash, phone, code, phone_code_hash, sess
 
 
 async def check_spambot(tg):
-    bot = await resolve_bot(tg.client, 'SpamBot')
-    await tg.send_message(bot, '/start')
-    await asyncio.sleep(3)
-    msg = await last_message(tg, bot)
-    text = (msg.raw_text or '').lower() if msg else ''
-    is_free = 'свободен' in text or 'no limits' in text or 'not limited' in text or 'no restrictions' in text
-    is_spam = not is_free and ('ограничен' in text or 'restricted' in text)
-    if is_spam:
-        raise RuntimeError('TG_SPAM_503')
+    """W4: устаревшая проверка спам-блока через @SpamBot. Больше НЕ вызывается
+    в setup-флоу (см. SetupSession.run) — выпилена как самостоятельный шаг.
+    Оставлена для обратной совместимости импортов/тестов; теперь no-op:
+    ложноположительные срабатывания TG_SPAM_503 блокировали онбординг."""
+    return
 
 
 async def training(tg, sponsors, bot):
@@ -572,12 +570,35 @@ async def training_with_progress(tg, sponsors, bot, setup_id=None, total_seconds
 
 
 async def configure_gpt(tg, bot):
+    # W4: сначала парсим актуальный список моделей из секции выбора и кешируем
+    # его (read_models_from_bot). Дефолт берём из распарсенного isDefault, а не
+    # из захардкоженного 'gemini-3-flash-preview-200k'.
+    from freeapi.models import read_models_from_bot, cache_models, find_model, DEFAULT_MODEL_ID
+    try:
+        parsed = await read_models_from_bot(tg, bot)
+        if parsed:
+            await cache_models(parsed)
+    except Exception as e:
+        logger.warning('[configure_gpt] model parse failed, using seed: %s', e)
+
+    # tgCallback дефолтной модели: isDefault из кеша, иначе DEFAULT_MODEL_ID
+    default_cb = None
+    for m in (parsed or []):
+        if m.get('isDefault'):
+            default_cb = m.get('tgCallback')
+            break
+    if not default_cb:
+        seed = find_model(DEFAULT_MODEL_ID)
+        default_cb = (seed or {}).get('tgCallback', 'select_gpt_model:gemini-3-flash-preview-200k')
+
     sequence = [
         b'open_gpt_settings_section', b'open_text_formatting_settings', b'select_text_formatting:false', b'open_gpt_settings_section',
         b'open_latex_response_format_settings', b'select_latex_response_format:none', b'open_gpt_settings_section',
         b'open_chat_reset_settings', b'select_chat_reset:false', b'open_gpt_settings_section',
         b'open_interaction_mode_settings', b'select_interaction_mode:True', b'open_gpt_settings_section',
-        b'open_change_gpt_model_section', b'select_gpt_model:gemini-3-flash-preview-200k', b'open_gpt_settings_section', b'back_to_additional',
+        b'open_change_gpt_model_section',
+        default_cb.encode() if isinstance(default_cb, str) else default_cb,
+        b'open_gpt_settings_section', b'back_to_additional',
     ]
     for data in sequence:
         msg = await last_message(tg, bot)

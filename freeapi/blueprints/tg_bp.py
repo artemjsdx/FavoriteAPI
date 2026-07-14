@@ -52,7 +52,7 @@ def tg_setup():
     setup_id = repo.create_setup_session(current_user_id(), account['id'])
     update_progress(setup_id, setupId=setup_id, step=0, stepLabel='Инициализация...', done=False, error=None)
     if session_string:
-        run_setup_background(setup_id, current_user_id(), account['id'], start_step=6 if skip_training else 1)
+        run_setup_background(setup_id, current_user_id(), account['id'], start_step=5 if skip_training else 1)
         return jsonify({'setupId': setup_id, 'tgAccountId': account['id'], 'status': 'running'}), 202
     if phone:
         try:
@@ -91,7 +91,7 @@ def tg_setup_code(setup_id):
     repo.update_tg_account(pending['tg_account_id'], session_string=encrypt_text(result['session_string']), is_valid=1)
     pending_skip = bool(pending.get('skip_training'))
     clear_pending_auth(setup_id)
-    run_setup_background(setup_id, current_user_id(), pending['tg_account_id'], start_step=6 if pending_skip else 1)
+    run_setup_background(setup_id, current_user_id(), pending['tg_account_id'], start_step=5 if pending_skip else 1)
     return jsonify({'setupId': setup_id, 'status': 'running'}), 202
 
 
@@ -137,7 +137,7 @@ def tg_setup_retry(setup_id):
     if setup.get('status') != 'error':
         return error('Повтор доступен только после ошибки настройки', 400)
     step = int(setup.get('current_step') or 1)
-    step = max(1, min(step, 6))
+    step = max(1, min(step, 5))   # W4: 5 шагов (check_spambot выпилен)
     label = setup.get('step_label') or f'Повтор шага {step}...'
     repo.update_setup_session(setup_id, status='running', current_step=step, step_label=label, error_msg=None)
     update_progress(setup_id, setupId=setup_id, step=step, stepLabel='Повторяем последний шаг...', done=False, error=None, canRetry=False)

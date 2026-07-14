@@ -67,10 +67,10 @@
       // Сразу синхронизируем шаг/прогресс-бар (чтобы не было «прыжка»
       // от 0% до текущего значения когда придёт первый SSE-пакет).
       var step = r.step || 0;
-      var num = _q('setupMiniStepNum'); if (num) num.textContent = step + '/6';
+      var num = _q('setupMiniStepNum'); if (num) num.textContent = step + '/5';
       var lbl = _q('setupMiniStepLabel'); if (lbl) lbl.textContent = r.stepLabel || 'Инициализация...';
       var bar = _q('setupMiniBar');
-      if (bar) bar.style.width = Math.max(2, Math.round(step / 6 * 100)) + '%';
+      if (bar) bar.style.width = Math.max(2, Math.round(step / 5 * 100)) + '%';
       // Если у нас не подключён tracker для этого setupId — подключаем.
       // Это случай F5: на странице нет ни SSE, ни setupId, но бэк всё
       // ещё гонит настройку.

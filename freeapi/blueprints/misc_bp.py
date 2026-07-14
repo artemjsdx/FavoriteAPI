@@ -65,9 +65,22 @@ def client_log():
 
 @bp.get('/api/models')
 def models_list():
+    # W4: актуальный список из кеша (парсится read_models_from_bot в configure_gpt),
+    # fallback на seed AI_MODELS. Без синхронного парсинга бота — не блокируем API.
+    from freeapi.models import get_cached_models
+    import asyncio
+    try:
+        loop = asyncio.new_event_loop()
+        try:
+            cached = loop.run_until_complete(get_cached_models())
+        finally:
+            loop.close()
+    except Exception:
+        cached = None
+    pool = cached if cached else AI_MODELS
     stats = {item['model_id']: item for item in repo.get_model_stats()}
     output = []
-    for model in AI_MODELS:
+    for model in pool:
         row = stats.get(model['id']) or {}
         output.append({'id': model['id'], 'displayName': model['displayName'], 'contextK': model['contextK'], 'supportsVision': model['supportsVision'], 'isDefault': model['isDefault'], 'isPopular': model['isPopular'], 'avgResponseMs': row.get('avg_response_ms'), 'totalRequests': row.get('total_requests', 0)})
     return jsonify({'models': output})
@@ -140,8 +153,20 @@ def v1_models_list():
     key, blocked = authorized_key()
     if blocked:
         return blocked
+    # W4: из кеша (read_models_from_bot в configure_gpt), fallback на seed.
+    from freeapi.models import get_cached_models
+    import asyncio
+    try:
+        loop = asyncio.new_event_loop()
+        try:
+            cached = loop.run_until_complete(get_cached_models())
+        finally:
+            loop.close()
+    except Exception:
+        cached = None
+    pool = cached if cached else AI_MODELS
     output = []
-    for model in AI_MODELS:
+    for model in pool:
         output.append({
             'id': model['id'],
             'displayName': model['displayName'],

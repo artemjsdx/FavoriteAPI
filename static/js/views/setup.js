@@ -233,12 +233,12 @@
   }
 
   function applyProgress(d){
-    var step = d.step || 0, total = 6;
+    var step = d.step || 0, total = 5;   // W4: 5 шагов (check_spambot выпилен)
     var skipTraining = !!window._setupSkipTraining;
     _q('progBar').style.width = Math.round(step / total * 100) + '%';
     _q('progLabel').textContent = d.stepLabel || '';
-    _q('btnRetrySetup').style.display = 'none';
     _q('progErr').style.display = 'none';
+    _q('btnRetrySetup').style.display = 'none';
     document.querySelectorAll('.prog-step').forEach(function(el){
       var s = +el.dataset.s;
       var text = el.querySelector('span');
@@ -248,13 +248,12 @@
       }
       el.classList.remove('s-done', 's-active');
       var icon = el.querySelector('.prog-icon');
-      if (skipTraining && step > 0 && s < 6) {
+      if (skipTraining && step > 0 && s < 5) {
         el.classList.add('s-done');
-        if (s === 1) text.textContent = 'Проверка пропущена';
-        if (s === 2) text.textContent = 'Запуск пропущен';
-        if (s === 3) text.textContent = 'Обучение пропущено';
-        if (s === 4) text.textContent = 'Настройки GPT пропущены';
-        if (s === 5) text.textContent = 'Промокоды пропущены';
+        if (s === 1) text.textContent = 'Запуск пропущен';
+        if (s === 2) text.textContent = 'Обучение пропущено';
+        if (s === 3) text.textContent = 'Настройки GPT пропущены';
+        if (s === 4) text.textContent = 'Промокоды пропущены';
         icon.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity:.4"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
       } else if (s < step) {
         el.classList.add('s-done');
@@ -311,7 +310,7 @@
     // обновляем DOM мини, даже если он сейчас скрыт — чтобы при показе
     // (например при клике юзера, или при рефреше дашборда) данные были
     // уже актуальные, а не «прыгали» с дефолта.
-    var step = d.step || 0, total = 6;
+    var step = d.step || 0, total = 5;   // W4: 5 шагов (check_spambot выпилен)
     var pct = Math.max(2, Math.round(step / total * 100));
     var bar = _q('setupMiniBar'); if (bar) bar.style.width = pct + '%';
     var lbl = _q('setupMiniStepLabel'); if (lbl && d.stepLabel) lbl.textContent = d.stepLabel;
@@ -327,7 +326,7 @@
       card.classList.add('is-done');
       var typD = _q('setupMiniTyp'); if (typD) typD.textContent = 'Готово!';
       if (lbl) lbl.textContent = 'Ключ создан и добавлен в дашборд';
-      if (num) num.textContent = '6/6';
+      if (num) num.textContent = '5/5';
       // Прячем виджет с задержкой, чтобы успела проиграться зелёная
       // подсветка и юзер увидел «успех». loadDashboard уже вызван выше
       // и подтянет новый ключ.
@@ -423,9 +422,9 @@
         var acct = r.tgUsername ? '@' + r.tgUsername
                   : (r.phone || (r.apiId ? 'API ID ' + r.apiId : account));
         showSetupMini({ user: siteUser, account: acct });
-        var num = _q('setupMiniStepNum'); if (num) num.textContent = (r.step || 0) + '/6';
+        var num = _q('setupMiniStepNum'); if (num) num.textContent = (r.step || 0) + '/5';
         var lbl = _q('setupMiniStepLabel'); if (lbl) lbl.textContent = r.stepLabel || 'Инициализация...';
-        var bar = _q('setupMiniBar'); if (bar) bar.style.width = Math.max(2, Math.round((r.step || 0) / 6 * 100)) + '%';
+        var bar = _q('setupMiniBar'); if (bar) bar.style.width = Math.max(2, Math.round((r.step || 0) / 5 * 100)) + '%';
       }).catch(function(){});
     }
     if (window.showToast) window.showToast('Настройка свернута — следите за прогрессом на дашборде', 'ok');
