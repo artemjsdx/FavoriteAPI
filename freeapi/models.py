@@ -55,6 +55,43 @@ def _is_gpt_callback(callback: str) -> bool:
     return tail.startswith('gpt')
 
 
+# Диапазоны Unicode-эмодзи/символов-картинок. Юзер просил вырезать ВСЕ эмодзи
+# из названий моделей (кнопки TG-бота часто несут 👀/⚡/🧠/✨ и т.п.).
+# Накрываем: символы эмодзи (разных блоков), Variation Selectors (FE0F/FE0E),
+# Zero-Width Joiner (ZWJ, 200D), Regional indicators (флаги) и combining-marks.
+import re as _re
+_EMOJI_RE = _re.compile(
+    '['
+    '\U0001F000-\U0001FAFF'   # Emoticons / Pictographs / Supplemental / Symbols
+    '\U0001F300-\U0001F6FF'   # Misc Symbols & Pictographs, Transport, Map
+    '\U0001F700-\U0001F77F'   # Alchemical Symbols
+    '\U0001F780-\U0001F7FF'   # Geometric Shapes Ext
+    '\U0001F900-\U0001F9FF'   # Supplemental Symbols & Pictographs
+    '\U0001FA00-\U0001FA6F'   # Chess Symbols
+    '\U0001FA70-\U0001FAFF'   # Symbols & Pictographs Ext-A
+    '☀-⛿'           # Misc Symbols (☀ ☁ ☂ …)
+    '✀-➿'           # Dingbats (✂ ✈ ✉ …)
+    '⌀-⏿'           # Misc Technical (⌚ ⌛ …)
+    '⬀-⯿'           # Misc Symbols & Arrows (⬅ ⬆ ⬇ ⛔ …)
+    '︀-️'           # Variation Selectors-1..16
+    '‍'                  # ZWJ (соединяет emoji-композиты)
+    '⃣'                  # Combining Enclosing Keycap
+    '©-®'           # © ®
+    ']+')
+
+
+def strip_emoji(text: str) -> str:
+    """Убрать эмодзи/вариации/ZWJ из текста, схлопнуть лишние пробелы.
+
+    'Gemini 3.5 Flash thinking 200k 👀' → 'Gemini 3.5 Flash thinking 200k'
+    """
+    if not text:
+        return text
+    cleaned = _EMOJI_RE.sub('', text)
+    cleaned = _re.sub(r'\s{2,}', ' ', cleaned)
+    return cleaned.strip()
+
+
 async def read_models_from_bot(tg, bot) -> list[dict]:
     """W4: распарсить актуальный список моделей из секции выбора TG-бота.
 
@@ -95,7 +132,7 @@ async def read_models_from_bot(tg, bot) -> list[dict]:
             if not tail or tail in seen:
                 continue
             seen.add(tail)
-            display = (getattr(btn, 'text', '') or tail).strip()
+            display = strip_emoji((getattr(btn, 'text', '') or tail).strip())
             # 200k vs 64k — по суффиксу в callback/displayName
             ctx_k = 64 if ('64k' in tail or '64k' in display.lower()) else 200
             out.append({
@@ -136,21 +173,33 @@ async def cache_models(models: list[dict]) -> None:
 
 
 def find_model(model_id):
-    """Синхронный поиск по кешу/seed. Для configure_gpt/bootstrap."""
-    import asyncio
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        return next((m for m in AI_MODELS if m['id'] == model_id), None)
-    if loop.is_running():
-        # внутри асинхронного контекста — не зовём async get; берём кеш напрямую
-        cache = _MODELS_CACHE['models']
-        pool = cache if cache is not None else AI_MODELS
-    else:
-        cache = loop.run_until_complete(get_cached_models())
-        pool = cache
-    return next((m for m in pool if m['id'] == model_id), None)
+    """Синхронный поиск по кешу/seed. Для configure_gpt/bootstrap.
+
+    W4-багфикс: ранее звался asyncio.get_event_loop(), а в потоке Flask-запроса
+    нет running-loop → вылетал в except и возвращал ТОЛЬКО seed AI_MODELS,
+    игнорируя наполненный кеш. Из-за этого /api/chat/test валидировал модель
+    по устаревшему seed-списку и отдавал 400 «Модель не существует» для любой
+    свежей модели (gemini-3.5-flash-200k). Кеш — обычный module-global dict,
+    читаем его напрямую (TTL-проверка тоже синхронная).
+    """
+    if not model_id:
+        return None
+    # 1) Кеш (если свежий) — то, что реально отдают /api/models и /api/v1/models.
+    cache = _MODELS_CACHE['models']
+    now = time.time()
+    if cache is not None and (now - _MODELS_CACHE['ts']) < _MODELS_CACHE_TTL:
+        m = next((x for x in cache if x['id'] == model_id), None)
+        if m is not None:
+            return m
+    # 2) Seed/fallback — для bootstrap'а и пока configure_gpt не отработал.
+    return next((m for m in AI_MODELS if m['id'] == model_id), None)
 
 
 def is_valid_model_id(model_id):
+    """Валиден ли id модели. Сверяется с динамическим кешем (а не только seed).
+
+    /api/models и /api/v1/models отдают get_cached_models() — значит и валидация
+    чата должна смотреть туда же, иначе возникает рассинхрон: список модель
+    показывает, а чат её отвергает (MDL_INVALID_403 / 400 «не существует»).
+    """
     return find_model(model_id) is not None

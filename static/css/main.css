@@ -2010,8 +2010,11 @@ body:has(#view-dashboard.active){background:#000!important}
   display:flex;gap:10px;margin-top:18px;
 }
 .setup-confirm-actions .btn{
-  flex:1;height:52px;display:inline-flex;align-items:center;justify-content:center;gap:6px;font-size:14px;font-weight:500;
+  flex:1 1 0;min-width:0;height:52px;display:inline-flex;align-items:center;justify-content:center;gap:6px;font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;
 }
-@media (max-width:420px){
+/* На узких экранах (телефон/вебвью) стэкаем кнопки вертикально — бок-о-бок
+   они жмутся и «Продолжить в фоне» не влезает. Поднимаем порог до 520px. */
+@media (max-width:520px){
   .setup-confirm-actions{flex-direction:column-reverse}
+  .setup-confirm-actions .btn{flex:0 0 auto;width:100%}
 }
